@@ -198,7 +198,7 @@ static inline struct constant constget(char * tok) {
 		constant.integer = strtoll(tok + 2, NULL, 16);
 		constant.id = INT;
 	} else {
-		constant.integer = strtoll(tok + 2, NULL, 10);
+		constant.integer = strtoll(tok, NULL, 10);
 		constant.id = INT;
 	}
 
@@ -606,15 +606,18 @@ int exec(void * prog) {
 	}
 	
 
-	/* memdmp_((u64)code.codeaddr, 128); */
-	/* memdmpd(mem + code.codeaddr, 128); */
 	char buf[_4KB]= { 0 };
 	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
 	printf("%s", buf);
 
-	printlines((struct instruct *)(mem + REGSTART), 3, buf, _4KB);
-	printf("%s", buf);
-	/* memdmp(buf, 64); */
+	FILE * tmp = fopen("tmp.raw", "wb");
+	if (tmp) {
+		fwrite(mem, sizeof(char), _16MB, tmp);
+		fclose(tmp);
+	} else {
+		fprintf(stderr, "error, unable to open tmp.raw for binary writing");
+	}
+
 	return 0;
 }
 
