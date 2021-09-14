@@ -452,11 +452,31 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 	size_t i, j, len, printed = 0,
 		wordsperline = sizeof(struct instruct)/sizeof(u64);
+	char c;
 
-	len = sprintf(buf, "[@%-8llx + %04lu lines]\n", (u64)start - (u64)mem, count);
+	len = sprintf(buf, "[@%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
+			(u64)start - (u64)mem, count, "Emu. Address", "Operation",
+			"Argument one", "Argument two", "Argument three" );
 	printed += len;
 	bufsz -= len;
+#define NICE_WIDTH 80
+	for (i = 0; i < NICE_WIDTH; ++i) {
+		if (i % 2) {
+			c = '\\';
+		} else {
+			c = '/';
+		}
+		len = sprintf(buf + printed, "%c", c);
+		printed += len;
+		bufsz += len;
+	}
+	len = sprintf(buf + printed, "\n");
+	printed += len;
+	bufsz += len;
 	for (i = 0; i < count; ++i) {
+		len = sprintf(buf + printed, ">>>>> @%08llx: ", (u64)(start + i) - (u64)mem);
+		printed += len;
+		bufsz -= len;
 		for (j = 0; j < wordsperline; ++j) {
 			len = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
 			if (len < 0) {
@@ -469,7 +489,7 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 				printed += len;
 				bufsz -= len;
 			} else {
-				len = sprintf(buf + printed, "\n");
+				len = sprintf(buf + printed, " <<<<<\n");
 				printed += len;
 				bufsz -= len;
 			}
