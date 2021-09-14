@@ -29,7 +29,7 @@ char mem[_16MB] = { 0 }; // arbitrary
 
 #define CODESTART _4MB
 
-#define STACKSTART (_8MB & _4MB)
+#define STACKSTART (_8MB | _4MB)
 
 #define REGSTART _4KB // registers are in main mem because everything is byte addressable
 
@@ -165,7 +165,7 @@ char * memname(u64 location) {
 }
 
 // CONST -- CONSTANTS
-enum constid { INT, FLOAT, STRING, GARBAGE }; // 7 characters per string value in big endian order after type
+enum constid { INT, HEX, FLOAT, STRING, GARBAGE }; // 7 characters per string value in big endian order after type
 struct constant {
 	enum constid id;
 	union {
@@ -203,7 +203,7 @@ static inline struct constant constget(char * tok) {
 	// try hex and int
 	if (strlen(tok) > 2 && tok[0] == '0' && tok[1] == 'x') {
 		constant.integer = strtoll(tok + 2, NULL, 16);
-		constant.id = INT;
+		constant.id = HEX;
 	} else {
 		constant.integer = strtoll(tok, NULL, 10);
 		constant.id = INT;
@@ -358,7 +358,7 @@ binary layout:
 ||    \\\\\\\\\\\
 type	  other junk
 */
-enum wtype { WNOP, WOP, WMEM, WINT, WFLOAT, WSTR }; // str continuation types?
+enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR }; // str continuation types?
 
 #define WTYPESHIFT 56 // stick it out in the first 8 bits
 #define WTYPEMASK 0xff << WTYPESHIFT
@@ -403,6 +403,7 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 		strncpy(buf, tmp, len);
 #define COLWTH 12 // yeah now it's not a magic number wonderful
 #define COLWTHSTR "12"
+#define COLWTHSTRMINUSONE "11"
 		for (i = 0; COLWTH - len - i > 0; ++i) {
 			strcpy(buf + len + i, " ");
 		}
@@ -422,6 +423,9 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 		break;
 	case WINT:
 		len = sprintf(buf, "%-" COLWTHSTR "llu", data);
+		break;
+	case WHEX:
+		len = sprintf(buf, "@%-" COLWTHSTRMINUSONE "llx", data);
 		break;
 	case WFLOAT:
 		// maybe????
@@ -519,6 +523,18 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 	return printed;
 }
 
+static inline char * getregs(void) {
+	static char buf[_1KB] = { 0 }; 
+	printlines((struct instruct *)(mem + REGSTART), 4, buf, _1KB);
+	return buf;
+}
+
+static inline char * getcode(size_t n) {
+	static char buf[_1KB] = { 0 }; 
+	printlines((struct instruct *)(mem + CODESTART), n, buf, _1KB);
+	return buf;
+}
+
 int pack(struct code * code, char * tok) {
 
 	struct tokinfo info = identify(tok);
@@ -557,6 +573,10 @@ int pack(struct code * code, char * tok) {
 			wsettype(word, WINT);
 			*word |= info.constant.integer;
 			break;
+		case HEX:
+			wsettype(word, WHEX);
+			*word |= info.constant.integer;
+			break;
 		case FLOAT:
 			wsettype(word, WFLOAT);
 			// will this work????
@@ -585,6 +605,17 @@ int pack(struct code * code, char * tok) {
 	return 0;
 }
 
+void regwrite(enum regid id, u64 data, enum wtype wtype) {
+	*((u64 *)(mem + REGSTART) + id) = data;
+	*((u64 *)(mem + REGSTART) + id) |= ((long)wtype << WTYPESHIFT);
+}
+
+u64 regread(enum regid id) {
+	return *((u64 *)(mem + REGSTART) + id) & ~(0xffUL << WTYPESHIFT);
+}
+
+
+
 int process(struct code * code, void * prog) {
 	int i;
 	bool sepseen = false;
@@ -608,6 +639,16 @@ int process(struct code * code, void * prog) {
 		/* memdmp_(code.codeaddr, 32); */
 		}
 	}
+
+	// account for final instruction:
+	++code->count;
+
+	// Set RD = code->count
+	regwrite(RD, code->count, WINT);
+	// Set RE = 0x
+	regwrite(RE, STACKSTART, WHEX);
+	// Set RF = IP = 0x0040000 = CODESTART
+	regwrite(RF, CODESTART, WHEX);
 	
 	return 0;
 }
@@ -623,6 +664,9 @@ int main(int argc, char *argv[]) {
 	     *binoutfilename = "bin.raw";
 	char buf[_4KB]= { 0 };
 	FILE * file, * bininfile = NULL;
+
+	struct code code = (struct code){
+		.count = 0, .needle = 0, .codeaddr = CODESTART };
 
 
 	while ((opt = getopt(argc, argv, "b:o:h")) != -1) switch(opt) {
@@ -654,6 +698,7 @@ int main(int argc, char *argv[]) {
 	if (bininfile) {
 		printf("LOAD 16MB IMAGE '%s'\n", bininfilename);
 		ret = fread(mem, sizeof(char), _16MB, bininfile);
+		code.count = regread(RD);
 		if (ret < 0) {
 			fprintf(stderr, "error: failed to read 16MB from file\n");
 			return 1;
@@ -687,9 +732,6 @@ int main(int argc, char *argv[]) {
 
 	fclose(file);
 
-	struct code code = (struct code){
-		.count = 0, .needle = 0, .codeaddr = CODESTART };
-
 	process(&code, tokbuf);
 
 	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
@@ -705,11 +747,14 @@ int main(int argc, char *argv[]) {
 
 cool_stuff:
 
-	printf("EXEC SYSTEM\n") ;
+	printf("EXEC SYSTEM\n\n") ;
 
 
-	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
-	printf("%s\n", buf);
+	/* printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB); */
+	/* printf("%s\n", buf); */
+
+	printf("REGISTERS:\n%s\n", getregs());
+	printf("CODE:\n%s\n", getcode(code.count));
 
 	return 0;
 

@@ -9,7 +9,8 @@ $ ./app prog
 ```
 
 This will create a file called bin.raw in the directory.
-The file contains a binary representation of `prog`:
+The file contains a binary representation of `prog`.
+It looks something like this:
 
 ```bash
 $ hexdump bin.raw
@@ -36,4 +37,11 @@ $ ./app prog # OR ./app -b bin.raw after generating the a binary file
 >>>>> @00400020: Increment    | [R0]         |   (no  op)   |   (no  op)   <<<<<
 >>>>> @00400040: Debug        |   (no  op)   |   (no  op)   |   (no  op)   <<<<<
 /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
+```
+
+This reproduces at least one bug:
+
+```bash
+$ make
+$ ./app prog2
 ```
