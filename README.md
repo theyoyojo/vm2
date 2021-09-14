@@ -4,15 +4,15 @@
 Interesting demo:
 
 ```bash
-make
-./app prog
+$ make
+$ ./app prog
 ```
 
 This will create a file called bin.raw in the directory.
 The file contains a binary representation of `prog`:
 
 ```bash
-cat bin.raw
+$ hexdump bin.raw
 0000000 0000 0000 0000 0000 0000 0000 0000 0000
 *
 0400000 0003 0000 0000 0100 1000 0000 0000 0200
@@ -28,6 +28,7 @@ cat bin.raw
 Binary Tape representation for `prog`:
 
 ```
+$ ./app prog # OR ./app -b bin.raw after generating the a binary file
 [Display Binary Tape for @00400000 + 0003 lines]
 | Emu. Address | Operation    | Argument one | Argument two | Argument three   |
 /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
