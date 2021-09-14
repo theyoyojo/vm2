@@ -118,16 +118,16 @@ struct mem {
 };
 
 // memory references are identified by @ prefix
-static inline struct mem memget(char * tok) {
+static struct mem memget(char * tok) {
 	struct mem mem = (struct mem){ JUNK, 0 };
 
-	if (tok && strlen(tok) > 1 && tok[0] == '*') {
+	if (tok && strlen(tok) > 1 && tok[0] == '@') {
 
-		// if @x prefix, expect hex, else expect decimal
-		if (tok[1] == 'x' && strlen(tok) > 2) {
-			mem.addr = strtoll(tok + 2, NULL, 16);
+		// if @d prefix, expect decimal, else expect hex
+		if (tok[1] == 'd' && strlen(tok) > 2) {
+			mem.addr = strtoll(tok + 2, NULL, 10);
 		} else {
-			mem.addr = strtoll(tok + 1, NULL, 10);
+			mem.addr = strtoll(tok + 1, NULL, 16);
 		}
 		mem.id = MAIN;
 	}
@@ -423,7 +423,7 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 			}
 			len += i ;
 		} else {
-			len = sprintf(buf, "@%-" COLWTHSTR "llx", data);
+			len = sprintf(buf, "@%-" COLWTHSTRMINUSONE "llx", data);
 		}
 		break;
 	case WINT:
@@ -458,23 +458,30 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 
 	if (len != 12) { // should be tautological
 		fprintf(stderr, "Aiee! Length is not 12 data@word='%llx@$%llx'!\n", data, (u64)word - (u64)mem);
-		return -1;
+		// kannot kontinue
+		exit(1);
+		
 	}
 
 	return len;
 }
 
+static inline void tracksprintf(char * buf, size_t * printed, size_t * bufsz, char * fmt, ...) {
+	va_list list;
+	size_t len;
 
-int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
-	size_t i, j, len, printed = 0,
-		wordsperline = sizeof(struct instruct)/sizeof(u64);
+	va_start(list,fmt);
+
+	len = vsprintf(buf + *printed, fmt, list);
+	*printed += len;
+	*bufsz -= len;
+
+	va_end(list);
+}
+
+static inline void printjagededge(char * buf, size_t * printed, size_t * bufsz) {
+	int i;
 	char c;
-
-	len = sprintf(buf, "[Display Binary Tape for @%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
-			(u64)start - (u64)mem, count, "Emu. Address", "Operation",
-			"Argument one", "Argument two", "Argument three" );
-	printed += len;
-	bufsz -= len;
 #define NICE_WIDTH 80
 	for (i = 0; i < NICE_WIDTH; ++i) {
 		if (i % 2) {
@@ -482,17 +489,23 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 		} else {
 			c = '/';
 		}
-		len = sprintf(buf + printed, "%c", c);
-		printed += len;
-		bufsz += len;
+		tracksprintf(buf, printed, bufsz, "%c", c);
 	}
-	len = sprintf(buf + printed, "\n");
-	printed += len;
-	bufsz += len;
+	tracksprintf(buf, printed, bufsz, "\n");
+}
+
+int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
+	size_t i, j, len, printed = 0,
+		wordsperline = sizeof(struct instruct)/sizeof(u64);
+
+	tracksprintf(buf, &printed, &bufsz, "[Display Binary Tape for @%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
+			(u64)start - (u64)mem, count, "Emu. Address", "Operation",
+			"Argument one", "Argument two", "Argument three" );
+
+// line: 5> + 4" @: " + 8 + 9" | " + 48%x + 6" <<<<<" == 80 characters coincidentally
+	printjagededge(buf, &printed, &bufsz);
 	for (i = 0; i < count; ++i) {
-		len = sprintf(buf + printed, ">>>>> @%08llx: ", (u64)(start + i) - (u64)mem);
-		printed += len;
-		bufsz -= len;
+		tracksprintf(buf, &printed, &bufsz, ">>>>> @%08llx: ", (u64)(start + i) - (u64)mem);
 		for (j = 0; j < wordsperline; ++j) {
 			len = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
 			if (len < 0) {
@@ -501,29 +514,13 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 			printed += len;
 			bufsz += len;
 			if (j < wordsperline - 1) {
-				len = sprintf(buf + printed, " | ");
-				printed += len;
-				bufsz -= len;
+				tracksprintf(buf, &printed, &bufsz, " | ");
 			} else {
-				len = sprintf(buf + printed, " <<<<<\n");
-				printed += len;
-				bufsz -= len;
+				tracksprintf(buf, &printed, &bufsz, " <<<<<\n");
 			}
 		}
 	}
-	for (i = 0; i < NICE_WIDTH; ++i) {
-		if (i % 2) {
-			c = '\\';
-		} else {
-			c = '/';
-		}
-		len = sprintf(buf + printed, "%c", c);
-		printed += len;
-		bufsz += len;
-	}
-	len = sprintf(buf + printed, "\n");
-	printed += len;
-	bufsz += len;
+	printjagededge(buf, &printed, &bufsz);
 	
 	return printed;
 }
@@ -577,12 +574,6 @@ int pack(struct code * code, char * tok) {
 	}
 
 	u64 word = code->codeaddr + (sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++);
-
-	/* _log("pack: mem(%p) + codeaddr(%lu) + %u*count(%lu) + %u*needle(%d) = word(%lu)\n", */
-	/* 		mem, code->codeaddr, sizeof(struct instruct), code->count, */
-	/* 		sizeof(u64), code->needle-1, word); */
-
-	/* _log("\ti.e. absolute word %lx\n", (u64)word - (u64)mem); */
 
 	switch (info.type) {
 	case OP:
