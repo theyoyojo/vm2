@@ -47,18 +47,18 @@ int _log(char * fmt, ...) {
 }
 
 // REG -- REGISTERS
-enum regid { R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, RA, RB, RC, RD, RE, RF, REGCOUNT };
+enum regid { R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, RA, RB, RC, RD, RE, RF, REGCOUNT, GARBREG };
 struct reg {
 	enum regid id;
 	u64 addr;
 };
 
-inline static struct reg regget(unsigned id) {
-	if (id >= REGCOUNT) {
+static struct reg regget(unsigned id) {
+	if (id < REGCOUNT) {
 		return (struct reg){(enum regid)id, REGSTART + id };
 	}
 
-	return (struct reg){ REGCOUNT, 0 };
+	return (struct reg){ GARBREG, 0 };
 }
 
 // OP -- OPERATIONS
@@ -114,7 +114,7 @@ struct mem {
 static inline struct mem memget(char * tok) {
 	struct mem mem = (struct mem){ JUNK, 0 };
 
-	if (tok && strlen(tok) > 1 && tok[0] == '@') {
+	if (tok && strlen(tok) > 1 && tok[0] == '*') {
 
 		// if @x prefix, expect hex, else expect decimal
 		if (tok[1] == 'x' && strlen(tok) > 2) {
@@ -253,7 +253,7 @@ void memdmp(char * addr, size_t cnt) {
 	size_t i;
 	for (i = 0; i < cnt; ++i) {
 		printf("0x%lx: %c\n", (unsigned long)(addr + i),
-				addr[i] != '\0' ? addr[i] : '@');
+				addr[i] != '\0' ? addr[i] : '*');
 	}
 }
 
@@ -314,6 +314,7 @@ struct tokinfo identify(char * tok) {
 		info.type = NONSENSE;
 	}
 	// registers
+	u64 foo = REGSTART; (void)foo;
 	if (tok[0] == 'R' || toupper(tok[0]) == 'R') {
 		if (!isxdigit(c = tok[1])) {
 			info.type = NONSENSE;
@@ -324,7 +325,10 @@ struct tokinfo identify(char * tok) {
 			c = toupper(c) ;
 		}
 		info.type = REG;
-		info.reg = regget(c);
+		if ((info.reg = regget(c - '0')).id == GARBREG) { // convert ascii numbers to binary
+			fprintf(stderr, "error: '%s' is a garbage register\n", tok);
+			info.type = NONSENSE;
+		}
 	// operations
 	} else if ((info.op = opget(tok)).id != RUBBISH) {
 		info.type = OP;
@@ -367,7 +371,7 @@ static inline u64 wgetdata(u64 * word) {
 char * opstr(enum opid opid) {
 	static char * opstrs[] = {
 		[NOP] = "No-op",	/* (void)0; 	*/
-		[INC] = "Increment",	/* ++A 		*/
+		[INC] = "Increment ",	/* ++A 		*/
 		[DEC] = "Decrement",	/* --B		*/
 		[MOV] = "Move",		/* A = B	*/
 		[LOD] = "Load",		/* A = *B	*/
@@ -384,35 +388,49 @@ char * opstr(enum opid opid) {
 int printword(u64 * word, char buf[], size_t bufsz) {
 	u64 data = wgetdata(word);
 	char * tmp;
-	size_t len;
+	size_t len, i;
 	switch (wgettype(word)) {
 	case WOP:
 		tmp = opstr((enum opid)data);
 		len = strlen(tmp);
 		strncpy(buf, tmp, len);
+#define COLWTH 12 // yeah now it's not a magic number wonderful
+#define COLWTHSTR "12"
+		for (i = 0; COLWTH - len - i > 0; ++i) {
+			strcpy(buf + len + i, " ");
+		}
+		len += i ;
 		break;
 	case WMEM:
 		if ((tmp = memname(data))) {
 			len = strlen(tmp);
 			strncpy(buf, tmp, len);
+			for (i = 0; COLWTH - len - i > 0; ++i) {
+				strcpy(buf + len + i, " ");
+			}
+			len += i ;
 		} else {
-			len = sprintf(buf, "@%llx", data);
+			len = sprintf(buf, "@%-" COLWTHSTR "llx", data);
 		}
 		break;
 	case WINT:
-		len = sprintf(buf, "%llu", data);
+		len = sprintf(buf, "%-" COLWTHSTR "llu", data);
 		break;
 	case WFLOAT:
 		// maybe????
-		len = sprintf(buf, "%f", (float)data);
+		len = sprintf(buf, "%" COLWTHSTR "g", (float)data);
 		break;
 	case WSTR:
 		strncpy(buf, ((char *)&data + 1), 7); // 8 per u64 minus metadata
 		len = 7;
+		for (i = 0; COLWTH - len - i > 0; ++i) {
+			strcpy(buf + len + i, " ");
+		}
+		len += i ;
 		break;
 	case WNOP:
 	default:
-		tmp = "(empty)";
+		tmp = "  (no  op)  ";
 		len = strlen(tmp);
 		strncpy(buf, tmp, len);
 	}
@@ -422,31 +440,38 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 		return -1;
 	}
 
-	printf("decoded word: %s\n", buf);
+	if (len != 12) { // should be tautological
+		fprintf(stderr, "Aiee! Length is not 12!\n");
+		return -1;
+	}
+
 	return len;
 }
 
 
 int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
-	size_t i, j, ret, printed = 0,
+	size_t i, j, len, printed = 0,
 		wordsperline = sizeof(struct instruct)/sizeof(u64);
 
-	printf("[@%llx + %lu lines]\n", (u64)start, count);
+	len = sprintf(buf, "[@%-8llx + %04lu lines]\n", (u64)start - (u64)mem, count);
+	printed += len;
+	bufsz -= len;
 	for (i = 0; i < count; ++i) {
 		for (j = 0; j < wordsperline; ++j) {
-			ret = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
-			if (ret < 0) {
+			len = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
+			if (len < 0) {
 				return -1;
 			}
-			printed += ret;
+			printed += len;
+			bufsz += len;
 			if (j < wordsperline - 1) {
-				sprintf(buf, " | ");
-				printed += strlen(" | ");
-				bufsz -= printed;
+				len = sprintf(buf + printed, " | ");
+				printed += len;
+				bufsz -= len;
 			} else {
-				sprintf(buf, "\n");
-				printed += strlen("\n");
-				bufsz -= printed;
+				len = sprintf(buf + printed, "\n");
+				printed += len;
+				bufsz -= len;
 			}
 		}
 	}
@@ -467,11 +492,11 @@ int pack(struct code * code, char * tok) {
 	u64 *word = (u64*)(mem + code->codeaddr +
 			(sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++));
 
-	_log("pack: mem(%p) + codeaddr(%lu) + %u*count(%lu) + %u*needle(%d) = word(%lu)\n",
-			mem, code->codeaddr, sizeof(struct instruct), code->count,
-			sizeof(u64), code->needle-1, word);
+	/* _log("pack: mem(%p) + codeaddr(%lu) + %u*count(%lu) + %u*needle(%d) = word(%lu)\n", */
+	/* 		mem, code->codeaddr, sizeof(struct instruct), code->count, */
+	/* 		sizeof(u64), code->needle-1, word); */
 
-	_log("\ti.e. absolute word %lx\n", (u64)word - (u64)mem);
+	/* _log("\ti.e. absolute word %lx\n", (u64)word - (u64)mem); */
 
 	switch (info.type) {
 	case OP:
@@ -543,7 +568,7 @@ int exec(void * prog) {
 			
 			p += strlen(p);
 			++i;
-		memdmp_(code.codeaddr, 32);
+		/* memdmp_(code.codeaddr, 32); */
 		}
 	}
 	
@@ -553,7 +578,7 @@ int exec(void * prog) {
 	char buf[_4KB]= { 0 };
 	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
 	printf("%s", buf);
-	memdmp(buf, 64);
+	/* memdmp(buf, 64); */
 	return 0;
 }
 
