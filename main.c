@@ -135,6 +135,14 @@ static struct mem memget(char * tok) {
 	return mem;
 }
 
+void * memtohost(u64 emuaddr) {
+	return (void *)(mem + emuaddr);
+}
+
+u64 hosttomem(void * hostptr) {
+	return (u64)hostptr - (u64)mem;
+}
+
 char * memname(u64 location) {
 	static char * regnames[] = {
 		[R0] = "[R0]",
@@ -163,6 +171,61 @@ char * memname(u64 location) {
 
 	return NULL;
 }
+
+// these functions directly dereference their ptrs to cells
+/*
+binary layout:
+0---2---4---6---8
+||    \\\\\\\\\\\
+type	  other junk
+*/
+enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR }; // str continuation types?
+
+#define WTYPESHIFT 56 // stick it out in the first 8 bits
+#define WTYPEMASK 0xff << WTYPESHIFT
+
+static inline void wsetdata(u64 * word, u64 data) {
+	*word |= data;
+}
+
+static inline void wsettype(u64 * word, enum wtype wtype) {
+	*word |= (u64)wtype << WTYPESHIFT;
+}
+
+static inline enum wtype wgettype(u64 * word) {
+	return *word >> WTYPESHIFT;
+}
+
+static inline u64 wgetdata(u64 * word) {
+	return *word & ~(0xffUL << WTYPESHIFT);
+}
+
+// for later: typedef u64 emuaddr or something
+// yeah just cast to expected type
+void * memread(u64 addr) {
+	return (void *)wgetdata((u64 *)(mem + addr));
+}
+
+static inline enum wtype memtype(u64 addr) {
+	return wgettype((u64 *)(mem + addr));
+}
+
+void memwrite(u64 addr, u64 data, enum wtype wtype) {
+	*(u64 *)(mem + addr) = data;
+	*(u64 *)(mem + addr) |= ((long)wtype << WTYPESHIFT);
+	wsettype((u64 *)(mem + addr), wtype);
+	wsetdata((u64 *)(mem + addr), data);
+}
+
+void regwrite(enum regid id, u64 data, enum wtype wtype) {
+	*((u64 *)(mem + REGSTART) + id) = data;
+	*((u64 *)(mem + REGSTART) + id) |= ((long)wtype << WTYPESHIFT);
+}
+
+u64 regread(enum regid id) {
+	return *((u64 *)(mem + REGSTART) + id) & ~(0xffUL << WTYPESHIFT);
+}
+
 
 // CONST -- CONSTANTS
 enum constid { INT, HEX, FLOAT, STRING, GARBAGE }; // 7 characters per string value in big endian order after type
@@ -352,34 +415,6 @@ struct tokinfo identify(char * tok) {
 	return info;
 }
 
-// these functions directly dereference their ptrs to cells
-/*
-binary layout:
-0---2---4---6---8
-||    \\\\\\\\\\\
-type	  other junk
-*/
-enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR }; // str continuation types?
-
-#define WTYPESHIFT 56 // stick it out in the first 8 bits
-#define WTYPEMASK 0xff << WTYPESHIFT
-
-static inline void wsetdata(u64 * word, u64 data) {
-	*word |= data;
-}
-
-static inline void wsettype(u64 * word, enum wtype wtype) {
-	*word |= (u64)wtype << WTYPESHIFT;
-}
-
-static inline enum wtype wgettype(u64 * word) {
-	return *word >> WTYPESHIFT;
-}
-
-static inline u64 wgetdata(u64 * word) {
-	return *word & ~(0xffUL << WTYPESHIFT);
-}
-
 char * opstr(enum opid opid) {
 	static char * opstrs[] = {
 		[NOP] = "No-op",	/* (void)0; 	*/
@@ -397,11 +432,12 @@ char * opstr(enum opid opid) {
 
 
 /* enum wtype { WNOP, WOP, WMEM, WINT, WFLOAT, WSTR }; // str continuation types? */
-int printword(u64 * word, char buf[], size_t bufsz) {
-	u64 data = wgetdata(word);
+int printword(u64 addr, char buf[], size_t bufsz) {
+	u64 data = (u64)memread(addr);
+	
 	char * tmp;
-	size_t len, i;
-	switch (wgettype(word)) {
+	size_t len = 0, i;
+	switch (memtype(addr)) {
 	case WOP:
 		tmp = opstr((enum opid)data);
 		len = strlen(tmp);
@@ -451,13 +487,15 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 		strncpy(buf, tmp, len);
 	}
 
+	static int foo = 0;
+	printf("FOO: %d\n", foo++);
 	if (len > bufsz) {
 		fprintf(stderr, "error: you wrote more bytes to the buffer than available!\n");
 		return -1;
 	}
 
 	if (len != 12) { // should be tautological
-		fprintf(stderr, "Aiee! Length is not 12 data@word='%llx@$%llx'!\n", data, (u64)word - (u64)mem);
+		fprintf(stderr, "Aiee! Length is not 12 data@word='%llx@$%llx'!\n", data, addr);
 		// kannot kontinue
 		exit(1);
 		
@@ -494,31 +532,45 @@ static inline void printjagededge(char * buf, size_t * printed, size_t * bufsz) 
 	tracksprintf(buf, printed, bufsz, "\n");
 }
 
-int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
-	size_t i, j, len, printed = 0,
+int printline(u64 addr, char buf[], size_t * bufsz, size_t * printed) {
+	size_t * _printed, len, dummy = 0, i,
 		wordsperline = sizeof(struct instruct)/sizeof(u64);
+	if (printed) {
+		_printed = printed;
+	} else  {
+		_printed = &dummy;
+	}
+
+	tracksprintf(buf, _printed, bufsz, ">>>>> @%08llx: ", addr);
+	for (i = 0; i < wordsperline; ++i) {
+		printf("bufsz=%lu, printed=%lu\n", *bufsz, *printed);
+		len = printword(addr + i * sizeof(u64), buf + *printed, *bufsz - *printed);
+		if (len < 0) {
+			return -1;
+		}
+		*printed += len;
+		*bufsz += len;
+		if (i < wordsperline - 1) {
+			tracksprintf(buf, _printed, bufsz, " | ");
+		} else {
+			tracksprintf(buf, _printed, bufsz, " <<<<<\n");
+		}
+	}
+
+	return *printed;
+}
+
+int printlines(u64 addr, size_t count, char buf[], size_t bufsz) {
+	size_t i, printed = 0;
 
 	tracksprintf(buf, &printed, &bufsz, "[Display Binary Tape for @%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
-			(u64)start - (u64)mem, count, "Emu. Address", "Operation",
+			addr, count, "Emu. Address", "Operation",
 			"Argument one", "Argument two", "Argument three" );
 
 // line: 5> + 4" @: " + 8 + 9" | " + 48%x + 6" <<<<<" == 80 characters coincidentally
 	printjagededge(buf, &printed, &bufsz);
 	for (i = 0; i < count; ++i) {
-		tracksprintf(buf, &printed, &bufsz, ">>>>> @%08llx: ", (u64)(start + i) - (u64)mem);
-		for (j = 0; j < wordsperline; ++j) {
-			len = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
-			if (len < 0) {
-				return -1;
-			}
-			printed += len;
-			bufsz += len;
-			if (j < wordsperline - 1) {
-				tracksprintf(buf, &printed, &bufsz, " | ");
-			} else {
-				tracksprintf(buf, &printed, &bufsz, " <<<<<\n");
-			}
-		}
+		printline(addr + i * sizeof(struct instruct), buf, &bufsz, &printed);
 	}
 	printjagededge(buf, &printed, &bufsz);
 	
@@ -527,40 +579,14 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 
 static inline char * getregs(void) {
 	static char buf[_1KB] = { 0 }; 
-	printlines((struct instruct *)(mem + REGSTART), 4, buf, _1KB);
+	printlines(REGSTART, 4, buf, _1KB);
 	return buf;
 }
 
 static inline char * getcode(size_t n) {
 	static char buf[_1KB] = { 0 }; 
-	printlines((struct instruct *)(mem + CODESTART), n, buf, _1KB);
+	printlines(CODESTART, n, buf, _1KB);
 	return buf;
-}
-
-// for later: typedef u64 emuaddr or something
-// yeah just cast to expected type
-void * memread(u64 addr) {
-	return (void *)wgetdata((u64 *)(mem + addr));
-}
-
-static inline enum wtype memtype(u64 addr) {
-	return wgettype((u64 *)(mem + addr));
-}
-
-void memwrite(u64 addr, u64 data, enum wtype wtype) {
-	*(u64 *)(mem + addr) = data;
-	*(u64 *)(mem + addr) |= ((long)wtype << WTYPESHIFT);
-	wsettype((u64 *)(mem + addr), wtype);
-	wsetdata((u64 *)(mem + addr), data);
-}
-
-void regwrite(enum regid id, u64 data, enum wtype wtype) {
-	*((u64 *)(mem + REGSTART) + id) = data;
-	*((u64 *)(mem + REGSTART) + id) |= ((long)wtype << WTYPESHIFT);
-}
-
-u64 regread(enum regid id) {
-	return *((u64 *)(mem + REGSTART) + id) & ~(0xffUL << WTYPESHIFT);
 }
 
 int pack(struct code * code, char * tok) {
@@ -738,7 +764,7 @@ int main(int argc, char *argv[]) {
 
 	process(&code, tokbuf);
 
-	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
+	printlines(CODESTART, 3, buf, _4KB);
 	printf("%s", buf);
 
 	FILE * tmp = fopen(binoutfilename, "wb");
