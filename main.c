@@ -128,6 +128,35 @@ static inline struct mem memget(char * tok) {
 	return mem;
 }
 
+char * memname(u64 location) {
+	static char * regnames[] = {
+		[R0] = "[R0]",
+		[R1] = "[R1]",
+		[R2] = "[R2]",
+		[R3] = "[R3]",
+		[R4] = "[R4]",
+		[R5] = "[R5]",
+		[R6] = "[R6]",
+		[R7] = "[R7]",
+		[R8] = "[R8]",
+		[R9] = "[R9]",
+		[RA] = "[RA]",
+		[RB] = "[RB]",
+		[RC] = "[RC]",
+		[RD] = "[RD]",
+		[RE] = "[RE]",
+		[RF] = "[RF]",
+	};
+	u64 regindex = location - REGSTART;
+	if (regindex < REGCOUNT) {
+		return regnames[regindex];
+	}
+
+	// we could have other names in the future
+
+	return NULL;
+}
+
 // CONST -- CONSTANTS
 enum constid { INT, FLOAT, STRING, GARBAGE }; // 7 characters per string value in big endian order after type
 struct constant {
@@ -239,8 +268,8 @@ void memdmpd(char * addr, size_t cnt) {
 void memdmp_(u64  addr, size_t cnt) {
 	size_t i;
 	for (i = 0; i < cnt; ++i) {
-		printf("0x%lx: %c\n", (unsigned long)(addr + i),
-				(mem + addr)[i] != '\0' ? (mem + addr)[i] : '@');
+		printf("0x%lx: %d\n", (unsigned long)(addr + i),
+				(mem + addr)[i] != '\0' ? (mem + addr)[i] : -1);
 	}
 }
 
@@ -321,9 +350,108 @@ type	  other junk
 enum wtype { WNOP, WOP, WMEM, WINT, WFLOAT, WSTR }; // str continuation types?
 
 #define WTYPESHIFT 56 // stick it out in the first 8 bits
+#define WTYPEMASK 0xff << WTYPESHIFT
 
 static inline void wsettype(u64 * word, enum wtype wtype) {
 	*word |= (u64)wtype << WTYPESHIFT;
+}
+
+static inline enum wtype wgettype(u64 * word) {
+	return *word >> WTYPESHIFT;
+}
+
+static inline u64 wgetdata(u64 * word) {
+	return *word & ~(0xffUL << WTYPESHIFT);
+}
+
+char * opstr(enum opid opid) {
+	static char * opstrs[] = {
+		[NOP] = "No-op",	/* (void)0; 	*/
+		[INC] = "Increment",	/* ++A 		*/
+		[DEC] = "Decrement",	/* --B		*/
+		[MOV] = "Move",		/* A = B	*/
+		[LOD] = "Load",		/* A = *B	*/
+		[SAV] = "Save",		/* *A = B	*/
+		[XFR] = "Transfer",	/* *A = *B	*/
+		[DBG] = "Debug",	/* (debug)	*/
+	};
+
+	return opstrs[opid];
+}
+
+
+/* enum wtype { WNOP, WOP, WMEM, WINT, WFLOAT, WSTR }; // str continuation types? */
+int printword(u64 * word, char buf[], size_t bufsz) {
+	u64 data = wgetdata(word);
+	char * tmp;
+	size_t len;
+	switch (wgettype(word)) {
+	case WOP:
+		tmp = opstr((enum opid)data);
+		len = strlen(tmp);
+		strncpy(buf, tmp, len);
+		break;
+	case WMEM:
+		if ((tmp = memname(data))) {
+			len = strlen(tmp);
+			strncpy(buf, tmp, len);
+		} else {
+			len = sprintf(buf, "@%llx", data);
+		}
+		break;
+	case WINT:
+		len = sprintf(buf, "%llu", data);
+		break;
+	case WFLOAT:
+		// maybe????
+		len = sprintf(buf, "%f", (float)data);
+		break;
+	case WSTR:
+		strncpy(buf, ((char *)&data + 1), 7); // 8 per u64 minus metadata
+		len = 7;
+		break;
+	case WNOP:
+	default:
+		tmp = "(empty)";
+		len = strlen(tmp);
+		strncpy(buf, tmp, len);
+	}
+
+	if (len > bufsz) {
+		fprintf(stderr, "error: you wrote more bytes to the buffer than available!\n");
+		return -1;
+	}
+
+	printf("decoded word: %s\n", buf);
+	return len;
+}
+
+
+int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
+	size_t i, j, ret, printed = 0,
+		wordsperline = sizeof(struct instruct)/sizeof(u64);
+
+	printf("[@%llx + %lu lines]\n", (u64)start, count);
+	for (i = 0; i < count; ++i) {
+		for (j = 0; j < wordsperline; ++j) {
+			ret = printword((u64 *)(start + i) + j, buf + printed, bufsz - printed);
+			if (ret < 0) {
+				return -1;
+			}
+			printed += ret;
+			if (j < wordsperline - 1) {
+				sprintf(buf, " | ");
+				printed += strlen(" | ");
+				bufsz -= printed;
+			} else {
+				sprintf(buf, "\n");
+				printed += strlen("\n");
+				bufsz -= printed;
+			}
+		}
+	}
+	
+	return printed;
 }
 
 int pack(struct code * code, char * tok) {
@@ -338,6 +466,12 @@ int pack(struct code * code, char * tok) {
 
 	u64 *word = (u64*)(mem + code->codeaddr +
 			(sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++));
+
+	_log("pack: mem(%p) + codeaddr(%lu) + %u*count(%lu) + %u*needle(%d) = word(%lu)\n",
+			mem, code->codeaddr, sizeof(struct instruct), code->count,
+			sizeof(u64), code->needle-1, word);
+
+	_log("\ti.e. absolute word %lx\n", (u64)word - (u64)mem);
 
 	switch (info.type) {
 	case OP:
@@ -414,8 +548,12 @@ int exec(void * prog) {
 	}
 	
 
-	memdmp_((u64)code.codeaddr, 128);
-	memdmpd(mem + code.codeaddr, 128);
+	/* memdmp_((u64)code.codeaddr, 128); */
+	/* memdmpd(mem + code.codeaddr, 128); */
+	char buf[_4KB]= { 0 };
+	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
+	printf("%s", buf);
+	memdmp(buf, 64);
 	return 0;
 }
 
