@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <ctype.h>
+#include <unistd.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,8 @@ char mem[_16MB] = { 0 }; // arbitrary
 
 #define CODESTART _4MB
 
+#define STACKSTART (_8MB & _4MB)
+
 #define REGSTART _4KB // registers are in main mem because everything is byte addressable
 
 int _log(char * fmt, ...) {
@@ -48,6 +51,10 @@ int _log(char * fmt, ...) {
 
 // REG -- REGISTERS
 enum regid { R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, RA, RB, RC, RD, RE, RF, REGCOUNT, GARBREG };
+// R0 will probably be used as accumulator
+// RF is the instruction pointer
+// RE is the stack pointer. As the stack grows, it becomes REEEEEEEEEE
+
 struct reg {
 	enum regid id;
 	u64 addr;
@@ -578,13 +585,10 @@ int pack(struct code * code, char * tok) {
 	return 0;
 }
 
-int exec(void * prog) {
+int process(struct code * code, void * prog) {
 	int i;
 	bool sepseen = false;
 	char * p = prog ;
-
-	struct code code = (struct code){
-		.count = 0, .needle = 0, .codeaddr = CODESTART };
 
 	i = 0;
 	while (*p || !sepseen) {
@@ -594,7 +598,7 @@ int exec(void * prog) {
 		} else {
 			sepseen = false;
 			printf("[%d]: %s\n", i, p);
-			if (pack(&code, p) < 0) {
+			if (pack(code, p) < 0) {
 				fprintf(stderr, "error: code packing failed\n");
 				return -1 ;
 			}
@@ -605,30 +609,64 @@ int exec(void * prog) {
 		}
 	}
 	
-
-	char buf[_4KB]= { 0 };
-	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
-	printf("%s", buf);
-
-	FILE * tmp = fopen("tmp.raw", "wb");
-	if (tmp) {
-		fwrite(mem, sizeof(char), _16MB, tmp);
-		fclose(tmp);
-	} else {
-		fprintf(stderr, "error, unable to open tmp.raw for binary writing");
-	}
-
 	return 0;
 }
 
+void usage(char * argv[]) {
+	printf("usage: %s <program text filename> [ -b <binary input filename> | -o <binary output filename> ]\n", argv[0]);
+}
 
 int main(int argc, char *argv[]) {
-	int cnt;
-	char * filename;
-	FILE * file;
+	int cnt, ret;
+	char * filename, opt,
+	     *bininfilename = NULL, 
+	     *binoutfilename = "bin.raw";
+	char buf[_4KB]= { 0 };
+	FILE * file, * bininfile = NULL;
 
-	if (argc > 1) {
-		filename = argv[1];
+
+	while ((opt = getopt(argc, argv, "b:o:h")) != -1) switch(opt) {
+		case 'b':
+			bininfilename = optarg;
+			if (!(bininfile = fopen(bininfilename, "rb"))) {
+				fprintf(stderr, "error: unable to open '%s' for binary reading\n", optarg);
+			}
+			_log("Reading binary input from file '%s'\n", bininfilename);
+			break;
+		case 'o':
+			binoutfilename = optarg;
+			break;
+		case '?':
+			if (optopt == 'b' || optopt == 'o') {
+				fprintf(stderr, "error: argument neeeded for '-%c' flag\n", optopt);
+			} else if (isprint(optopt)) {
+				fprintf(stderr, "error: I've never seen'-%c' in my life\n", optopt);
+			} else {
+				fprintf(stderr, "error: what the heck is '-%x'?\n", optopt);
+			}
+		case 'h':
+		default:
+			usage(argv);
+			return 0;
+	}
+
+
+	if (bininfile) {
+		printf("LOAD 16MB IMAGE '%s'\n", bininfilename);
+		ret = fread(mem, sizeof(char), _16MB, bininfile);
+		if (ret < 0) {
+			fprintf(stderr, "error: failed to read 16MB from file\n");
+			return 1;
+		}
+		// skip the parsing and...
+		goto cool_stuff;
+	}
+	else if (argc >= optind) {
+		filename = argv[optind];
+		if (!filename) {
+			usage(argv) ;
+			return 1;
+		}
 		if (!(file = fopen(filename, "r"))) {
 			fprintf(stderr, "error: failed to open file '%s'\n", filename);
 			return 1;
@@ -636,6 +674,7 @@ int main(int argc, char *argv[]) {
 	} else {
 		file = stdin;
 	}
+
 
 	printf("hello welkom 2 my  vm\n");
 
@@ -647,6 +686,31 @@ int main(int argc, char *argv[]) {
 	}
 
 	fclose(file);
-	return exec(tokbuf);
+
+	struct code code = (struct code){
+		.count = 0, .needle = 0, .codeaddr = CODESTART };
+
+	process(&code, tokbuf);
+
+	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
+	printf("%s", buf);
+
+	FILE * tmp = fopen(binoutfilename, "wb");
+	if (tmp) {
+		fwrite(mem, sizeof(char), _16MB, tmp);
+		fclose(tmp);
+	} else {
+		fprintf(stderr, "error, unable to open tmp.raw for binary writing");
+	}
+
+cool_stuff:
+
+	printf("EXEC SYSTEM\n") ;
+
+
+	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
+	printf("%s\n", buf);
+
+	return 0;
 
 }
