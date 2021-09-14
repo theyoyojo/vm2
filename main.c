@@ -454,7 +454,7 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 		wordsperline = sizeof(struct instruct)/sizeof(u64);
 	char c;
 
-	len = sprintf(buf, "[@%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
+	len = sprintf(buf, "[Display Binary Tape for @%08llx + %04lu lines]\n| %-12s | %-12s | %-12s | %-12s | %-16s |\n",
 			(u64)start - (u64)mem, count, "Emu. Address", "Operation",
 			"Argument one", "Argument two", "Argument three" );
 	printed += len;
@@ -495,6 +495,19 @@ int printlines(struct instruct *start, size_t count, char buf[], size_t bufsz) {
 			}
 		}
 	}
+	for (i = 0; i < NICE_WIDTH; ++i) {
+		if (i % 2) {
+			c = '\\';
+		} else {
+			c = '/';
+		}
+		len = sprintf(buf + printed, "%c", c);
+		printed += len;
+		bufsz += len;
+	}
+	len = sprintf(buf + printed, "\n");
+	printed += len;
+	bufsz += len;
 	
 	return printed;
 }
@@ -597,6 +610,9 @@ int exec(void * prog) {
 	/* memdmpd(mem + code.codeaddr, 128); */
 	char buf[_4KB]= { 0 };
 	printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB);
+	printf("%s", buf);
+
+	printlines((struct instruct *)(mem + REGSTART), 3, buf, _4KB);
 	printf("%s", buf);
 	/* memdmp(buf, 64); */
 	return 0;
