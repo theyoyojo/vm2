@@ -3,7 +3,7 @@
 # By Joel Savitz <jsavitz@redhat.com>
 
 CC 	= gcc
-CFLAGS  = -g -Wall -Werror
+CFLAGS  = -gdwarf-4 -Wall -Werror
 OBJECTS = main.o
 BIN	= app
 

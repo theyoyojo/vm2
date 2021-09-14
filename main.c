@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 typedef unsigned long long u64 ;
 
@@ -29,6 +30,21 @@ char mem[_16MB] = { 0 }; // arbitrary
 
 #define REGSTART _4KB // registers are in main mem because everything is byte addressable
 
+int _log(char * fmt, ...) {
+	int ret ;
+	char pfx[] = "[DEBUG] ";
+	va_list list;
+	static char buf[128];
+
+	strncpy(buf, pfx, strlen(pfx));
+	va_start(list, fmt);
+
+	strncpy(buf + strlen(pfx), fmt, 128 - strlen(pfx));
+	ret = vfprintf(stdout, buf, list);
+
+	va_end(list);
+	return ret;
+}
 
 // REG -- REGISTERS
 enum regid { R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, RA, RB, RC, RD, RE, RF, REGCOUNT };
@@ -212,6 +228,22 @@ void memdmp(char * addr, size_t cnt) {
 	}
 }
 
+void memdmpd(char * addr, size_t cnt) {
+	size_t i;
+	for (i = 0; i < cnt; ++i) {
+		printf("0x%lx: %d\n", (unsigned long)(addr + i),
+				addr[i] != '\0' ? addr[i] : -1);
+	}
+}
+
+void memdmp_(u64  addr, size_t cnt) {
+	size_t i;
+	for (i = 0; i < cnt; ++i) {
+		printf("0x%lx: %c\n", (unsigned long)(addr + i),
+				(mem + addr)[i] != '\0' ? (mem + addr)[i] : '@');
+	}
+}
+
 struct code {
 	size_t count ;
 	int needle;
@@ -297,7 +329,15 @@ static inline void wsettype(u64 * word, enum wtype wtype) {
 int pack(struct code * code, char * tok) {
 
 	struct tokinfo info = identify(tok);
-	u64 *word = &code->codestart[code->count].integers[code->needle++ % 4];
+	// end of 4 word 'line' or new op means return to begining of next line,
+	// but we must do the the return for OP now and for end-of-line after for counting
+	if (code->needle > 0 && info.type == OP) {
+		++code->count;
+		code->needle = 0 ;
+	}
+
+	u64 *word = (u64*)(mem + code->codeaddr +
+			(sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++));
 
 	switch (info.type) {
 	case OP:
@@ -338,7 +378,11 @@ int pack(struct code * code, char * tok) {
 		return -1 ;
 	}
 	
-	++code->count;
+	if (code->needle > 3) {
+		++code->count;
+		code->needle = 0 ;
+	}
+	
 	return 0;
 }
 
@@ -348,7 +392,7 @@ int exec(void * prog) {
 	char * p = prog ;
 
 	struct code code = (struct code){
-		.count = 0, .needle = 0, .codeaddr = CODESTART } ;
+		.count = 0, .needle = 0, .codeaddr = CODESTART };
 
 	i = 0;
 	while (*p || !sepseen) {
@@ -365,9 +409,13 @@ int exec(void * prog) {
 			
 			p += strlen(p);
 			++i;
+		memdmp_(code.codeaddr, 32);
 		}
 	}
 	
+
+	memdmp_((u64)code.codeaddr, 128);
+	memdmpd(mem + code.codeaddr, 128);
 	return 0;
 }
 
