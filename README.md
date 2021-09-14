@@ -45,3 +45,7 @@ This reproduces at least one bug:
 $ make
 $ ./app prog2
 ```
+
+I'm going to implement C-like semantics, where the the first argument to a mutation must be an "l-value",
+i.e a storage location, not one to be dereferenced, whereas a save/transfer operation will mutate the data
+stored at the adress contained at that location instead of the extant data.

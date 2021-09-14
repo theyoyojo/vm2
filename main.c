@@ -352,6 +352,7 @@ struct tokinfo identify(char * tok) {
 	return info;
 }
 
+// these functions directly dereference their ptrs to cells
 /*
 binary layout:
 0---2---4---6---8
@@ -362,6 +363,10 @@ enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR }; // str continuation ty
 
 #define WTYPESHIFT 56 // stick it out in the first 8 bits
 #define WTYPEMASK 0xff << WTYPESHIFT
+
+static inline void wsetdata(u64 * word, u64 data) {
+	*word |= data;
+}
 
 static inline void wsettype(u64 * word, enum wtype wtype) {
 	*word |= (u64)wtype << WTYPESHIFT;
@@ -441,7 +446,7 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 		break;
 	case WNOP:
 	default:
-		tmp = "  (no  op)  ";
+		tmp = "  ( junk )  ";
 		len = strlen(tmp);
 		strncpy(buf, tmp, len);
 	}
@@ -452,7 +457,7 @@ int printword(u64 * word, char buf[], size_t bufsz) {
 	}
 
 	if (len != 12) { // should be tautological
-		fprintf(stderr, "Aiee! Length is not 12!\n");
+		fprintf(stderr, "Aiee! Length is not 12 data@word='%llx@$%llx'!\n", data, (u64)word - (u64)mem);
 		return -1;
 	}
 
@@ -535,6 +540,32 @@ static inline char * getcode(size_t n) {
 	return buf;
 }
 
+// for later: typedef u64 emuaddr or something
+// yeah just cast to expected type
+void * memread(u64 addr) {
+	return (void *)wgetdata((u64 *)(mem + addr));
+}
+
+static inline enum wtype memtype(u64 addr) {
+	return wgettype((u64 *)(mem + addr));
+}
+
+void memwrite(u64 addr, u64 data, enum wtype wtype) {
+	*(u64 *)(mem + addr) = data;
+	*(u64 *)(mem + addr) |= ((long)wtype << WTYPESHIFT);
+	wsettype((u64 *)(mem + addr), wtype);
+	wsetdata((u64 *)(mem + addr), data);
+}
+
+void regwrite(enum regid id, u64 data, enum wtype wtype) {
+	*((u64 *)(mem + REGSTART) + id) = data;
+	*((u64 *)(mem + REGSTART) + id) |= ((long)wtype << WTYPESHIFT);
+}
+
+u64 regread(enum regid id) {
+	return *((u64 *)(mem + REGSTART) + id) & ~(0xffUL << WTYPESHIFT);
+}
+
 int pack(struct code * code, char * tok) {
 
 	struct tokinfo info = identify(tok);
@@ -545,8 +576,7 @@ int pack(struct code * code, char * tok) {
 		code->needle = 0 ;
 	}
 
-	u64 *word = (u64*)(mem + code->codeaddr +
-			(sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++));
+	u64 word = code->codeaddr + (sizeof(struct instruct) * code->count) + (sizeof(u64) * code->needle++);
 
 	/* _log("pack: mem(%p) + codeaddr(%lu) + %u*count(%lu) + %u*needle(%d) = word(%lu)\n", */
 	/* 		mem, code->codeaddr, sizeof(struct instruct), code->count, */
@@ -556,35 +586,28 @@ int pack(struct code * code, char * tok) {
 
 	switch (info.type) {
 	case OP:
-		wsettype(word, WOP);
-		*word |= info.op.id;
+		memwrite(word, info.op.id, WOP);
 		break;
 	case REG:
-		wsettype(word, WMEM);
-		*word |= info.reg.addr;
+		memwrite(word, info.reg.addr, WMEM);
 		break;
 	case MEM:
-		wsettype(word, WMEM);
-		*word |= info.mem.addr;
+		memwrite(word, info.mem.addr, WMEM);
 		break;
 	case CONST:
 		switch (info.constant.id) {
 		case INT:
-			wsettype(word, WINT);
-			*word |= info.constant.integer;
+			memwrite(word, info.constant.integer, WINT);
 			break;
 		case HEX:
-			wsettype(word, WHEX);
-			*word |= info.constant.integer;
+			memwrite(word, info.constant.integer, WHEX);
 			break;
 		case FLOAT:
-			wsettype(word, WFLOAT);
 			// will this work????
-			*word |= *(char*)&info.constant.floating;
+			memwrite(word, *(char*)&info.constant.floating, WFLOAT);
 			break;
 		case STRING:
-			wsettype(word, WSTR);
-			strncpy((char *)word + 1, info.constant.string, 7);
+			memwrite(word, *(u64*)info.constant.string, WSTR);
 			break;
 		case GARBAGE:
 		default:
@@ -604,16 +627,6 @@ int pack(struct code * code, char * tok) {
 	
 	return 0;
 }
-
-void regwrite(enum regid id, u64 data, enum wtype wtype) {
-	*((u64 *)(mem + REGSTART) + id) = data;
-	*((u64 *)(mem + REGSTART) + id) |= ((long)wtype << WTYPESHIFT);
-}
-
-u64 regread(enum regid id) {
-	return *((u64 *)(mem + REGSTART) + id) & ~(0xffUL << WTYPESHIFT);
-}
-
 
 
 int process(struct code * code, void * prog) {
