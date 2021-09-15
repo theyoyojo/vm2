@@ -26,6 +26,27 @@ typedef unsigned long long u64 ;
 #define _16MB 	(1UL << 24)
 #define _32MB 	(1UL << 25)
 char mem[_16MB] = { 0 }; // arbitrary
+static struct code {
+	size_t count, odometer ;
+	bool running;
+	int needle;
+	union {
+		struct instruct {
+			union {
+				struct {
+					u64 op;
+					u64 arg1;
+					u64 arg2;
+					u64 arg3;
+				};
+				char bytes[32];
+				u64 integers[4];
+			};
+		} *codestart;
+		u64 codeaddr;
+	};
+} * code;
+
 
 #define CODESTART _4MB
 
@@ -99,6 +120,8 @@ static inline struct op opget(char * op) {
 	case '*':
 		if (ref) return (struct op) { XFR };
 		if (asn) return (struct op) { LOD };
+		ref = true;
+		break;
 	case 'x':
 		if (dbg1) if (dbg2) return (struct op) { DBG } ;
 		else dbg2 = true ; else dbg1 = true ;
@@ -201,9 +224,12 @@ static inline u64 wgetdata(u64 * word) {
 }
 
 // for later: typedef u64 emuaddr or something
-// yeah just cast to expected type
-void * memread(u64 addr) {
-	return (void *)wgetdata((u64 *)(mem + addr));
+// yeah just cast to another type if you would prefer that instead
+u64 memread(u64 addr) {
+	if (code->running) {
+		printf(">> READ @%08llx\n", addr);
+	}
+	return wgetdata((u64 *)(mem + addr));
 }
 
 static inline enum wtype memtype(u64 addr) {
@@ -211,6 +237,9 @@ static inline enum wtype memtype(u64 addr) {
 }
 
 void memwrite(u64 addr, u64 data, enum wtype wtype) {
+	if (code->running) {
+		printf(">> WRITE  @%08llx = %lld\n", addr, data);
+	}
 	*(u64 *)(mem + addr) = data;
 	*(u64 *)(mem + addr) |= ((long)wtype << WTYPESHIFT);
 	wsettype((u64 *)(mem + addr), wtype);
@@ -343,26 +372,6 @@ void memdmp_(u64  addr, size_t cnt) {
 	}
 }
 
-struct code {
-	size_t count ;
-	int needle;
-	union {
-		struct instruct {
-			union {
-				struct {
-					u64 op;
-					u64 arg1;
-					u64 arg2;
-					u64 arg3;
-				};
-				char bytes[32];
-				u64 integers[4];
-			};
-		} *codestart;
-		u64 codeaddr;
-	};
-};
-
 enum toktype { OP, REG, MEM, CONST, NONSENSE };
 
 struct tokinfo {
@@ -431,9 +440,8 @@ char * opstr(enum opid opid) {
 }
 
 
-/* enum wtype { WNOP, WOP, WMEM, WINT, WFLOAT, WSTR }; // str continuation types? */
 int printword(u64 addr, char buf[], size_t bufsz) {
-	u64 data = (u64)memread(addr);
+	u64 data = memread(addr);
 	
 	char * tmp;
 	size_t len = 0, i;
@@ -475,7 +483,7 @@ int printword(u64 addr, char buf[], size_t bufsz) {
 	case WSTR:
 		strncpy(buf, ((char *)&data + 1), 7); // 8 per u64 minus metadata
 		len = 7;
-		for (i = 0; COLWTH - len - i > 0; ++i) {
+		for (i = -1; COLWTH - len - i > 0; ++i) {
 			strcpy(buf + len + i, " ");
 		}
 		len += i ;
@@ -487,8 +495,6 @@ int printword(u64 addr, char buf[], size_t bufsz) {
 		strncpy(buf, tmp, len);
 	}
 
-	static int foo = 0;
-	printf("FOO: %d\n", foo++);
 	if (len > bufsz) {
 		fprintf(stderr, "error: you wrote more bytes to the buffer than available!\n");
 		return -1;
@@ -543,12 +549,11 @@ int printline(u64 addr, char buf[], size_t * bufsz, size_t * printed) {
 
 	tracksprintf(buf, _printed, bufsz, ">>>>> @%08llx: ", addr);
 	for (i = 0; i < wordsperline; ++i) {
-		printf("bufsz=%lu, printed=%lu\n", *bufsz, *printed);
-		len = printword(addr + i * sizeof(u64), buf + *printed, *bufsz - *printed);
+		len = printword(addr + i * sizeof(u64), buf + *_printed, *bufsz - *_printed);
 		if (len < 0) {
 			return -1;
 		}
-		*printed += len;
+		*_printed += len;
 		*bufsz += len;
 		if (i < wordsperline - 1) {
 			tracksprintf(buf, _printed, bufsz, " | ");
@@ -557,7 +562,7 @@ int printline(u64 addr, char buf[], size_t * bufsz, size_t * printed) {
 		}
 	}
 
-	return *printed;
+	return *_printed;
 }
 
 int printlines(u64 addr, size_t count, char buf[], size_t bufsz) {
@@ -577,16 +582,29 @@ int printlines(u64 addr, size_t count, char buf[], size_t bufsz) {
 	return printed;
 }
 
-static inline char * getregs(void) {
+static inline char * regstr(void) {
 	static char buf[_1KB] = { 0 }; 
 	printlines(REGSTART, 4, buf, _1KB);
 	return buf;
 }
 
-static inline char * getcode(size_t n) {
+static inline char * codestr(size_t n) {
 	static char buf[_1KB] = { 0 }; 
 	printlines(CODESTART, n, buf, _1KB);
 	return buf;
+}
+
+static char * unalignedstr = "!unaligned                                                           unaligned!"; 
+static inline char * linestr(u64 line) {
+	static char buf[128] = { 0 };
+	if (line % 8) {
+		return unalignedstr;
+	}
+
+	size_t sz = 128;
+	printline(line, buf, &sz, NULL);
+	return buf;
+
 }
 
 int pack(struct code * code, char * tok) {
@@ -683,6 +701,80 @@ int process(struct code * code, void * prog) {
 	return 0;
 }
 
+int exec(struct code * code) {
+	int ret = 0;
+	u64 ip;
+	size_t wsz = sizeof(u64);
+	enum opid op;
+
+	ip = regread(RF);
+	code->odometer = 0;
+	code->running = true;
+	if (ip % 1 << 8) {
+		fprintf(stderr, "error: alignment check failed for @%llx\n", ip);
+		ret = -1;
+		goto out;
+	}
+	// Let OP A B C = OP arg1 arg3 arg3
+	code->running = true;
+	while (memtype(ip) == WOP && code->odometer++ < code->count) {
+		switch (op = (enum opid)memread(ip)) {
+		case MOV:
+			// A = B
+			memwrite(memread(ip + wsz), memread(ip + 2 * wsz), memtype(ip + 2 * wsz));
+			break;
+		case LOD:
+			// A = *B
+			memwrite(memread(ip + wsz), memread(memread(ip + 2 * wsz)),
+					memtype(memread(ip + 2 * wsz)));
+		case SAV:
+			// *A = B
+			memwrite(memread(memread(ip + wsz)),
+					memread(ip + 2 * wsz), memtype(ip + 2 * wsz));
+		case XFR:
+			// *A = *B
+			memwrite(memread(memread(ip + wsz)), memread(memread(ip + 2 * wsz)),
+					memtype(memread(ip + 2 * wsz)));
+		case INC:
+			// A++
+			memwrite(memread(ip + wsz), memread(memread(ip + 1 * wsz)) + 1, WINT);
+			break;
+		case DEC:
+			// A--
+			memwrite(memread(ip + wsz), memread(memread(ip + 1 * wsz)) - 1, WINT);
+			break;
+		case DBG:
+			goto debug_break;
+		case NOP:
+		default:
+			break ;
+		}
+
+		printf("[%lu] EXECUTE\n%s%s\n", code->odometer - 1, linestr(ip), regstr());
+		ip += sizeof(struct instruct);
+	}
+out:
+	code->running = false;
+
+	if (memtype(ip) != WOP) {
+		fprintf(stderr, "error: no opcode found at @%llx\n", ip);
+		ret = -1;
+	}
+
+	printf("MACHINE HALT\n");
+	printf("REGISTERS:\n%s\n", regstr());
+	printf("CODE:\n%s\n", codestr(code->count));
+
+	return ret;
+
+debug_break:
+	printf("... debug stub ...\n");
+
+	/* debug instruction stuff goes here in this cave */
+
+	goto out;
+}
+
 void usage(char * argv[]) {
 	printf("usage: %s <program text filename> [ -b <binary input filename> | -o <binary output filename> ]\n", argv[0]);
 }
@@ -692,11 +784,22 @@ int main(int argc, char *argv[]) {
 	char * filename, opt,
 	     *bininfilename = NULL, 
 	     *binoutfilename = "bin.raw";
-	char buf[_4KB]= { 0 };
+	/* char buf[_4KB]= { 0 }; */
 	FILE * file, * bininfile = NULL;
 
-	struct code code = (struct code){
-		.count = 0, .needle = 0, .codeaddr = CODESTART };
+	code = malloc(sizeof(struct code));
+	if (!code) {
+		fprintf(stderr, "oom!\n");
+		return 1;
+	}
+
+	*code = (struct code){
+		.count = 0,
+		.odometer = 0,
+		.needle = 0,
+		.running = false,
+		.codeaddr = CODESTART,
+	};
 
 
 	while ((opt = getopt(argc, argv, "b:o:h")) != -1) switch(opt) {
@@ -728,7 +831,7 @@ int main(int argc, char *argv[]) {
 	if (bininfile) {
 		printf("LOAD 16MB IMAGE '%s'\n", bininfilename);
 		ret = fread(mem, sizeof(char), _16MB, bininfile);
-		code.count = regread(RD);
+		code->count = regread(RD);
 		if (ret < 0) {
 			fprintf(stderr, "error: failed to read 16MB from file\n");
 			return 1;
@@ -762,10 +865,10 @@ int main(int argc, char *argv[]) {
 
 	fclose(file);
 
-	process(&code, tokbuf);
+	process(code, tokbuf);
 
-	printlines(CODESTART, 3, buf, _4KB);
-	printf("%s", buf);
+	/* printlines(CODESTART, 3, buf, _4KB); */
+	/* printf("%s", buf); */
 
 	FILE * tmp = fopen(binoutfilename, "wb");
 	if (tmp) {
@@ -778,14 +881,12 @@ int main(int argc, char *argv[]) {
 cool_stuff:
 
 	printf("EXEC SYSTEM\n\n") ;
+	printf("REGISTERS:\n%s\n", regstr());
+	printf("CODE:\n%s\n", codestr(code->count));
 
+	ret = exec(code);
 
-	/* printlines((struct instruct *)(mem + CODESTART), 3, buf, _4KB); */
-	/* printf("%s\n", buf); */
-
-	printf("REGISTERS:\n%s\n", getregs());
-	printf("CODE:\n%s\n", getcode(code.count));
-
-	return 0;
+	free(code);
+	return ret;
 
 }
