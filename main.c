@@ -25,9 +25,14 @@ typedef unsigned long long u64 ;
 #define _8MB 	(1UL << 23)
 #define _16MB 	(1UL << 24)
 #define _32MB 	(1UL << 25)
-char mem[_16MB] = { 0 }; // arbitrary
+#define SYSTEMSIZE _16MB
+char mem[SYSTEMSIZE] = { 0 }; // arbitrary
+struct syment {
+	char * name;
+	u64 data;
+};
 static struct code {
-	size_t count, odometer ;
+	size_t count, odometer, symcount;
 	bool running;
 	int needle;
 	union {
@@ -71,7 +76,26 @@ int _log(char * fmt, ...) {
 }
 
 // REG -- REGISTERS
-enum regid { R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, RA, RB, RC, RD, RE, RF, REGCOUNT, GARBREG };
+enum regid {
+	R0,
+	R1,
+	R2,
+	R3,
+	R4,
+	R5,
+	R6,
+	R7,
+	R8,
+	R9,
+	RA,
+	RB,
+	RC,
+	RD,
+	RE,
+	RF,
+	REGCOUNT,
+	GARBREG
+};
 // R0 will probably be used as accumulator
 // RF is the instruction pointer
 // RE is the stack pointer. As the stack grows, it becomes REEEEEEEEEE
@@ -89,8 +113,45 @@ static struct reg regget(unsigned id) {
 	return (struct reg){ GARBREG, 0 };
 }
 
-// OP -- OPERATIONS
-enum opid { NOP, INC, DEC, MOV, LOD, SAV, XFR, AND, DBG, OPCOUNT, RUBBISH } ;
+/* OP -- OPERATIONS
+ * 	NOP		No-op: do nothing
+ *	INC	++	Increment: increment arg1
+ * 	DEC	--	Decrement arg1
+ *	MOV	==	Move data at arg2 into location in arg1
+ * 	LOD	=*	Move data from location in arg2 into location in arg1
+ *	SAV	*=	Move data from arg2 into location in location in arg1
+ *	XFR	**	Move data from location in arg2 into location in location in arg1
+ *	AND	&=	Store the result of a binary and of the data at the location in arg1
+ *				and the data in the location of arg2 in the location in arg1
+ *	JMP	!!	Set the next instruction pointer to the data on top of the stack
+ *	JDR	!*	Set the instruction pointer to the data in arg1
+ *	JZR	!0	If R0 is zero then set the instruction pointer to the data on top of the stack
+ *	JPS	!+	If R0 is positive then set the instruction pointer to the data on top of the stack
+ *	JNG	!-	If R0 is negative then set the instruction pointer to the data on top of the stack
+ *	PSH	^^	Push the data at the location in arg1 onto the stack
+ *	POP 	VV	Pop the data on top of the stack into the location in arg1
+ *	DBG	xxx	Halt and run debug stuff
+*/
+enum opid {
+	NOP,	
+	INC,	
+	DEC,	
+	MOV,	
+	LOD,
+	SAV,
+	XFR,
+	AND,
+	JMP,
+	JDR,
+	JZR,
+	JPS,
+	JNG,
+	PSH,
+	POP,
+	DBG,
+	OPCOUNT,
+	RUBBISH
+};
 struct op {
 	enum opid id;
 };
@@ -99,30 +160,55 @@ static inline struct op opget(char * op) {
 		inc = false,
 		dec = false,
 		ref  = false,
+		jmp = false,
+		and = false,
+		psh = false,
+		pop = false,
 		dbg1 = false,
 		dbg2 = false;
 
 	// a whacky instruction decoder
 	while (op && *op) switch(*op++) {
 	case '&':
-		return (struct op) { AND };
+		if (jmp) return (struct op) { JDR };
+		and = true;
+		break;
+	case '0':
+		if (jmp) return (struct op) { JZR };
+		break;
+	case '!':
+		if (jmp) return (struct op) { JMP };
+		jmp = true;
+		break;
 	case '=':
-		if (asn) return (struct op){ MOV };
-		if (ref) return (struct op){ SAV };
+		if (asn) return (struct op) { MOV };
+		if (ref) return (struct op) { SAV };
+		if (and) return (struct op) { AND };
 		asn = true;
 		break;
 	case '+':
 		if (inc) return (struct op) { INC };
+		if (jmp) return (struct op) { JPS };
 		inc = true;
 		break;
 	case '-':
 		if (dec) return (struct op) { DEC };
+		if (jmp) return (struct op) { JNG };
 		dec = true;
 		break;
 	case '*':
 		if (ref) return (struct op) { XFR };
 		if (asn) return (struct op) { LOD };
+		if (jmp) return (struct op) { JDR };
 		ref = true;
+		break;
+	case '^':
+		if (psh) return (struct op) { PSH };
+		psh = true;
+		break;
+	case 'V':
+		if (pop) return (struct op) { POP };
+		pop = true;
 		break;
 	case 'x':
 		if (dbg1) if (dbg2) return (struct op) { DBG } ;
@@ -435,7 +521,14 @@ char * opstr(enum opid opid) {
 		[LOD] = "Load",		/* A = *B	*/
 		[SAV] = "Save",		/* *A = B	*/
 		[XFR] = "Transfer",	/* *A = *B	*/
-		[AND] = "Binary And",	/* A &= B	*/
+		[AND] = "Binary and",	/* A &= B	*/
+		[JMP] = "Jump uncond.",	/* goto *stack  */
+		[JDR] = "Jump direct",	/* goto arg1 	*/
+		[JZR] = "Jump zero",	/* R0 == 0 	=> goto *stack */
+		[JPS] = "Jump pos.",	/* R0 > 0 	=> goto *stack */
+		[JNG] = "Jump neg.",	/* R0 < 0 	=> goto *stack */
+		[PSH] = "Push",		/* *--stack = arg1 */
+		[POP] = "Pop",		/* arg1 = *stack++ */
 		[DBG] = "Debug",	/* (debug)	*/
 	};
 
@@ -597,6 +690,13 @@ static inline char * codestr(size_t n) {
 	return buf;
 }
 
+static  char * stackstr(void) {
+	static char buf[_4KB] = { 0 }; 
+	u64 rounddown = regread(RE) - (regread(RE) % sizeof(struct instruct));
+	printlines(rounddown , (STACKSTART - rounddown)/sizeof(struct instruct), buf, _1KB);
+	return buf;
+}
+
 static char * unalignedstr = "!unaligned                                                           unaligned!"; 
 static inline char * linestr(u64 line) {
 	static char buf[128] = { 0 };
@@ -744,13 +844,50 @@ int exec(struct code * code) {
 					memtype(memread(ip + 2 * wsz)));
 		case INC:
 			// A++
-			memwrite(memread(ip + wsz), memread(memread(ip + 1 * wsz)) + 1, WINT);
+			memwrite(memread(ip + wsz), memread(memread(ip + wsz)) + 1, WINT);
 			break;
 		case DEC:
 			// A--
-			memwrite(memread(ip + wsz), memread(memread(ip + 1 * wsz)) - 1, WINT);
+			memwrite(memread(ip + wsz), memread(memread(ip +  wsz)) - 1, WINT);
+			break;
+		case JMP:
+			// RF = *RE - size(instruction)
+			memwrite(regget(RF).addr, memread(regget(RE).addr) - sizeof(struct instruct), WMEM);
+			break;
+		case JDR:
+			// RF = A - size(instruction)
+			memwrite(regget(RF).addr, memread(memread(ip + wsz)) - sizeof(struct instruct), WMEM);
+			break;
+		case JPS:
+			// If R0 > 0 then RF = *RE - size(instruction)
+			if (regread(R0) > 0) {
+				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+			}
+			break;
+		case JNG:
+			// If R0 < 0 then RF = *RE - size(instruction)
+			if (regread(R0) < 0) {
+				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+			}
+			break;
+		case JZR:
+			// If R0 == 0 then RF = *RE - size(instruction)
+			if (regread(R0) == 0) {
+				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+			}
+			break;
+		case PSH:
+			// stack -= size(word) then *stack = arg1
+			regwrite(RE, regread(RE) - sizeof(u64), WMEM);
+			memwrite(regread(RE), memread(memread(ip + wsz)), memtype(memread(ip + wsz)));
+			break;
+		case POP:
+			// arg1 = *stack then stack += size(word)
+			memwrite(memread(ip + wsz), memread(regread(RE)), memtype(regread(RE)));
+			regwrite(RE, regread(RE) + sizeof(u64), WMEM);
 			break;
 		case DBG:
+			/* ~ debug break ~ */
 			goto debug_break;
 		case NOP:
 		default:
@@ -771,6 +908,7 @@ out:
 	printf("MACHINE HALT\n");
 	printf("REGISTERS:\n%s\n", regstr());
 	printf("CODE:\n%s\n", codestr(code->count));
+	printf("STACK:\n%s\n", stackstr());
 
 	return ret;
 
@@ -837,7 +975,7 @@ int main(int argc, char *argv[]) {
 
 	if (bininfile) {
 		printf("LOAD 16MB IMAGE '%s'\n", bininfilename);
-		ret = fread(mem, sizeof(char), _16MB, bininfile);
+		ret = fread(mem, sizeof(char), SYSTEMSIZE, bininfile);
 		code->count = regread(RD);
 		if (ret < 0) {
 			fprintf(stderr, "error: failed to read 16MB from file\n");
@@ -879,7 +1017,7 @@ int main(int argc, char *argv[]) {
 
 	FILE * tmp = fopen(binoutfilename, "wb");
 	if (tmp) {
-		fwrite(mem, sizeof(char), _16MB, tmp);
+		fwrite(mem, sizeof(char), SYSTEMSIZE, tmp);
 		fclose(tmp);
 	} else {
 		fprintf(stderr, "error, unable to open tmp.raw for binary writing");
