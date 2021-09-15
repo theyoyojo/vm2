@@ -114,7 +114,7 @@ static struct reg regget(unsigned id) {
 }
 
 /* OP -- OPERATIONS
- * 	NOP		No-op: do nothing
+ * 	NOP	..	No-op: do nothing
  *	INC	++	Increment: increment arg1
  * 	DEC	--	Decrement arg1
  *	MOV	==	Move data at arg2 into location in arg1
@@ -123,6 +123,7 @@ static struct reg regget(unsigned id) {
  *	XFR	**	Move data from location in arg2 into location in location in arg1
  *	AND	&=	Store the result of a binary and of the data at the location in arg1
  *				and the data in the location of arg2 in the location in arg1
+ *	NOT	~=	Set the location in arg1 to the inversion of its current contents
  *	JMP	!!	Set the next instruction pointer to the data on top of the stack
  *	JDR	!*	Set the instruction pointer to the data in arg1
  *	JZR	!0	If R0 is zero then set the instruction pointer to the data on top of the stack
@@ -141,6 +142,7 @@ enum opid {
 	SAV,
 	XFR,
 	AND,
+	NOT,
 	JMP,
 	JDR,
 	JZR,
@@ -162,6 +164,8 @@ static inline struct op opget(char * op) {
 		ref  = false,
 		jmp = false,
 		and = false,
+		nop = false,
+		not = false,
 		psh = false,
 		pop = false,
 		dbg1 = false,
@@ -176,6 +180,13 @@ static inline struct op opget(char * op) {
 	case '0':
 		if (jmp) return (struct op) { JZR };
 		break;
+	case '~':
+		not = true;
+		break;
+	case '.':
+		if (nop) return (struct op) { NOP };
+		nop = true;
+		break;
 	case '!':
 		if (jmp) return (struct op) { JMP };
 		jmp = true;
@@ -184,6 +195,7 @@ static inline struct op opget(char * op) {
 		if (asn) return (struct op) { MOV };
 		if (ref) return (struct op) { SAV };
 		if (and) return (struct op) { AND };
+		if (not) return (struct op) { NOT };
 		asn = true;
 		break;
 	case '+':
@@ -549,6 +561,7 @@ char * opstr(enum opid opid) {
 		[SAV] = "Save",		/* *A = B	*/
 		[XFR] = "Transfer",	/* *A = *B	*/
 		[AND] = "Binary and",	/* A &= B	*/
+		[NOT] = "Binary not",	/* A &= B	*/
 		[JMP] = "Jump uncond.",	/* goto *stack  */
 		[JDR] = "Jump direct",	/* goto arg1 	*/
 		[JZR] = "Jump zero",	/* R0 == 0 	=> goto *stack */
@@ -864,18 +877,26 @@ int exec(struct code * code) {
 			// A &= B
 			memwrite(memread(ip + wsz), memread(memread(ip + wsz)) & memread(memread(ip + 2 * wsz)), memtype(memread(ip + wsz)));
 			break;
+		case NOT:
+			// TODO sign extension
+			// A = ~A
+			memwrite(memread(ip + wsz), ~memread(memread(ip + wsz)), memtype(memread(ip + wsz)));
+			break;
 		case LOD:
 			// A = *B
 			memwrite(memread(ip + wsz), memread(memread(ip + 2 * wsz)),
 					memtype(memread(ip + 2 * wsz)));
+			break;
 		case SAV:
 			// *A = B
 			memwrite(memread(memread(ip + wsz)),
 					memread(ip + 2 * wsz), memtype(ip + 2 * wsz));
+			break;
 		case XFR:
 			// *A = *B
 			memwrite(memread(memread(ip + wsz)), memread(memread(ip + 2 * wsz)),
 					memtype(memread(ip + 2 * wsz)));
+			break;
 		case INC:
 			// A++
 			memwrite(memread(ip + wsz), memread(memread(ip + wsz)) + 1, WINT);
@@ -886,7 +907,8 @@ int exec(struct code * code) {
 			break;
 		case JMP:
 			// RF = *RE - size(instruction)
-			memwrite(regget(RF).addr, memread(regget(RE).addr) - sizeof(struct instruct), WMEM);
+			memwrite(regget(RF).addr, 
+					memread(regget(RE).addr) - sizeof(struct instruct), WMEM);
 			break;
 		case JDR:
 			// RF = A - size(instruction)
@@ -895,19 +917,19 @@ int exec(struct code * code) {
 		case JPS:
 			// If R0 > 0 then RF = *RE - size(instruction)
 			if (regread(R0) > 0) {
-				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+				regwrite(RF, memread(regread(RE)) - sizeof(struct instruct), WMEM);
 			}
 			break;
 		case JNG:
 			// If R0 < 0 then RF = *RE - size(instruction)
 			if (regread(R0) < 0) {
-				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+				regwrite(RF, memread(regread(RE)) - sizeof(struct instruct), WMEM);
 			}
 			break;
 		case JZR:
 			// If R0 == 0 then RF = *RE - size(instruction)
 			if (regread(R0) == 0) {
-				regwrite(RF, regread(RE) - sizeof(struct instruct), WMEM);
+				regwrite(RF, memread(regread(RE)) - sizeof(struct instruct), WMEM);
 			}
 			break;
 		case PSH:
