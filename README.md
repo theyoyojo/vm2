@@ -5,11 +5,11 @@ Interesting demo:
 
 ```bash
 $ make
-$ ./app prog
+$ ./app hello.x
 ```
 
 This will create a file called bin.raw in the directory.
-The file contains a binary representation of `prog`.
+The file contains a binary representation of `hello.x`.
 It looks something like this:
 
 ```bash
@@ -26,10 +26,10 @@ $ hexdump bin.raw
 1000000
 ```
 
-Execution example for `prog`:
+Execution example for `hello.x`:
 
 ```
-$ ./app prog # OR ./app -b bin.raw after generating the a binary file
+$ ./app hello.x # OR ./app -b bin.raw after generating the a binary file
 hello welkom 2 my  vm
 [0]: ==
 [1]: R0
@@ -152,14 +152,6 @@ CODE:
 /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
 
 ```
-
-This reproduces at least one bug:
-
-```bash
-$ make
-$ ./app prog2
-```
-
 I'm going to implement C-like semantics, where the the first argument to a mutation must be an "l-value",
 i.e a storage location, not one to be dereferenced, whereas a save/transfer operation will mutate the data
 stored at the adress contained at that location instead of the extant data.

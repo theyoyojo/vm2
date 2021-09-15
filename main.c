@@ -290,7 +290,7 @@ binary layout:
 ||    \\\\\\\\\\\
 type	  other junk
 */
-enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR }; // str continuation types?
+enum wtype { WNOP, WOP, WMEM, WINT, WHEX, WFLOAT, WSTR, WSYM }; // str continuation types?
 
 #define WTYPESHIFT 56 // stick it out in the first 8 bits
 #define WTYPEMASK 0xff << WTYPESHIFT
@@ -392,6 +392,28 @@ static inline struct constant constget(char * tok) {
 	return constant;
 }
 
+// yeah this will be janky
+void symadd(struct syment e) {
+	u64 addr = SYSTEMSIZE - (code->symcount + 1) * sizeof(struct syment);
+	memcpy(mem + addr, &e, sizeof(struct syment));
+}
+
+u64 symget(char * label) {
+	size_t i = 0;
+	struct syment e;
+	u64 addr = SYSTEMSIZE - sizeof(struct syment);
+	while (i < code->symcount) {
+		memcpy(&e, mem + addr, sizeof(struct syment));
+		if (!strcmp(label, e.name)) {
+			return e.data;
+		}
+		addr += sizeof(struct syment);
+		++i;
+	}
+	
+	return 0;
+}
+
 char tokbuf[_4MB] = { 0 }; // arbitrary
 
 int tokenize(FILE * file, char * buf, size_t len) {
@@ -460,7 +482,7 @@ void memdmp_(u64  addr, size_t cnt) {
 	}
 }
 
-enum toktype { OP, REG, MEM, CONST, NONSENSE };
+enum toktype { OP, REG, MEM, CONST, SYMBOL, TOKTYPECOUNT, NONSENSE };
 
 struct tokinfo {
 	enum toktype type;
@@ -469,6 +491,7 @@ struct tokinfo {
 		struct reg reg;
 		struct mem mem;
 		struct constant constant;
+		struct syment syment;
 	};
 };
 
@@ -505,6 +528,10 @@ struct tokinfo identify(char * tok) {
 	// constant
 	} else if  ((info.constant = constget(tok)).id != GARBAGE) {
 		info.type = CONST;
+	// label/symbol
+	} else if (tok[len - 1] == ':') {
+		info.type = SYMBOL;
+		strncpy(info.syment.name, tok, len - 1);
 	} else {
 		info.type = NONSENSE;
 	}
@@ -583,6 +610,9 @@ int printword(u64 addr, char buf[], size_t bufsz) {
 			strcpy(buf + len + i, " ");
 		}
 		len += i ;
+		break;
+	case WSYM:
+		len = sprintf(buf, "  (SYMBOL)  ");
 		break;
 	case WNOP:
 	default:
@@ -751,6 +781,10 @@ int pack(struct code * code, char * tok) {
 		default:
 			break;
 		}
+		break;
+	case SYMBOL:
+		info.syment.data = word + (sizeof(struct instruct) - word % sizeof(struct instruct));
+		symadd(info.syment);
 		break;
 	case NONSENSE:
 	default:
