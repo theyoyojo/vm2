@@ -83,14 +83,14 @@ struct reg {
 
 static struct reg regget(unsigned id) {
 	if (id < REGCOUNT) {
-		return (struct reg){(enum regid)id, REGSTART + id };
+		return (struct reg){(enum regid)id, REGSTART + id * sizeof(u64)};
 	}
 
 	return (struct reg){ GARBREG, 0 };
 }
 
 // OP -- OPERATIONS
-enum opid { NOP, INC, DEC, MOV, LOD, SAV, XFR, DBG, OPCOUNT, RUBBISH } ;
+enum opid { NOP, INC, DEC, MOV, LOD, SAV, XFR, AND, DBG, OPCOUNT, RUBBISH } ;
 struct op {
 	enum opid id;
 };
@@ -104,6 +104,8 @@ static inline struct op opget(char * op) {
 
 	// a whacky instruction decoder
 	while (op && *op) switch(*op++) {
+	case '&':
+		return (struct op) { AND };
 	case '=':
 		if (asn) return (struct op){ MOV };
 		if (ref) return (struct op){ SAV };
@@ -185,7 +187,7 @@ char * memname(u64 location) {
 		[RE] = "[RE]",
 		[RF] = "[RF]",
 	};
-	u64 regindex = location - REGSTART;
+	u64 regindex = (location - REGSTART) / sizeof(u64);
 	if (regindex < REGCOUNT) {
 		return regnames[regindex];
 	}
@@ -433,6 +435,7 @@ char * opstr(enum opid opid) {
 		[LOD] = "Load",		/* A = *B	*/
 		[SAV] = "Save",		/* *A = B	*/
 		[XFR] = "Transfer",	/* *A = *B	*/
+		[AND] = "Binary And",	/* A &= B	*/
 		[DBG] = "Debug",	/* (debug)	*/
 	};
 
@@ -722,6 +725,10 @@ int exec(struct code * code) {
 		case MOV:
 			// A = B
 			memwrite(memread(ip + wsz), memread(ip + 2 * wsz), memtype(ip + 2 * wsz));
+			break;
+		case AND:
+			// A &= B
+			memwrite(memread(ip + wsz), memread(memread(ip + wsz)) & memread(memread(ip + 2 * wsz)), memtype(memread(ip + wsz)));
 			break;
 		case LOD:
 			// A = *B

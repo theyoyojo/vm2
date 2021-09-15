@@ -6,4 +6,3 @@
 ++ @7
 =* R0 @7010
 ** R0
-; writing this made me realize I have work to do in terms of cfg;
